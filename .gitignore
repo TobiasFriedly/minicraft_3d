@@ -1,0 +1,7 @@
+*.gba
+*.map
+*.sav
+*.elf
+*.*~
+*.obj
+*.temp

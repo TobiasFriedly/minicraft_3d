@@ -16,7 +16,8 @@ CFLAGS := -O3 -flto -marm -mthumb-interwork -mcpu=arm7tdmi -mtune=arm7tdmi \
 	-fomit-frame-pointer -ffast-math -fno-strict-aliasing \
 	-ffunction-sections -fdata-sections -falign-functions=16 -falign-loops=16 \
 	-Wall -Wextra -std=gnu99 -DNDEBUG \
-	-I$(LIBGBA_INC)
+	-I$(LIBGBA_INC) \
+	-DPLAT_GBA
 LDFLAGS := -flto -specs=$(GBA_SPECS) -Wl,--gc-sections -Wl,-Map=$(TARGET).map \
 	-L$(LIBGBA_LIB)
 LIBS := -lgba -lm
