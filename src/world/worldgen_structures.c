@@ -1,922 +1,886 @@
-static void prepare_column_desc(int gx, int gz, ColumnGenDesc* out){
-    memset(out, 0, sizeof(*out));
-    if(g_dimension == 1){
-        fix floor1 = vnoise_norm(gx, gz, 4, 100);
-        fix floor2 = vnoise_norm(gx, gz, 3, 200);
-        fix floor3 = vnoise_norm(gx, gz, 5, 511);
-        fix roof1 = vnoise_norm(gx, gz, 4, 311);
-        fix roof2 = vnoise_norm(gx, gz, 3, 417);
-        fix roof3 = vnoise_norm(gx, gz, 5, 619);
-        int h = 4 + F2I(fmuli(floor1, F(8)) + fmuli(floor2, F(5)) + fmuli(floor3, F(3)));
-        int roof_y = (CH - 8) - F2I(fmuli(roof1, F(8)) + fmuli(roof2, F(6)) + fmuli(roof3, F(4)));
-        int min_gap = 12 + ((noise2_u16(gx + 222, gz + 444) >> 7) & 3);
-        if(h < 3) h = 3;
-        if(h > 19) h = 19;
-        if(roof_y < h + min_gap) roof_y = h + min_gap;
-        if(roof_y > CH - 5) roof_y = CH - 5;
-        out->top_block = BLK_NETHERRACK;
-        out->flags = COL_FLAG_NETHER;
-        out->surface_y = (u8)(h - 1);
-        out->nether_roof_y = (u8)roof_y;
-        if(gx >= 12 && gx < VW - 12 && gz >= 12 && gz < VD - 12 &&
-           ((gx - 12) & 31) == 0 && ((gz - 12) & 31) == 0 &&
-           ((noise2_u16(gx + 400, gz + 900) & 255) < 112)){
-            out->deco_heavy |= DECO_HEAVY_FORTRESS;
-        }
-        return;
-    }
-
-    if(g_world_type == WORLD_SUPERFLAT){
-        out->surface_y = 10;
-        out->top_block = BLK_GRASS;
-        out->flags = COL_FLAG_SUPERFLAT;
-        return;
-    }
-
-    const bool highlands = (g_world_type == WORLD_HIGHLANDS);
-    int biome = biome_type_at(gx, gz);
-    bool is_ocean = (biome == BIOME_OCEAN);
-    bool is_desert = (biome == BIOME_DESERT);
-    fix n1 = vnoise_norm(gx, gz, highlands ? 5 : 4, highlands ? 13 : 11);
-    fix n2 = vnoise_norm(gx, gz, 3, highlands ? 41 : 37);
-    fix n3 = vnoise_norm(gx, gz, 2, highlands ? 83 : 73);
-    int h = 10 + F2I(fmuli(n1, highlands ? F(16) : F(12))
-                   + fmuli(n2, highlands ? F(8) : F(6))
-                   + fmuli(n3, highlands ? F(6) : F(3)));
-    if(is_ocean) h = (highlands ? 5 : 6) + F2I(fmuli(fmuli(n1, highlands ? F(16) : F(12))
-                                                   + fmuli(n2, highlands ? F(8) : F(6))
-                                                   + fmuli(n3, highlands ? F(6) : F(3)),
-                                                   highlands ? F(0.35f) : F(0.4f)));
-    if(h < 6) h = 6;
-    if(h > CH-2) h = CH-2;
-
-    out->surface_y = (u8)h;
-    out->biome = (u8)biome;
-    if(is_desert) out->top_block = BLK_SAND;
-    else if(is_ocean) out->top_block = (noise2_u16(gx+17, gz+29) & 1) ? BLK_SAND : BLK_CLAY;
-    else out->top_block = BLK_GRASS;
-
-    if(h <= 15 && h >= 13 && !is_ocean) out->flags |= COL_FLAG_SAND_BEACH;
-    if(is_ocean) out->flags |= COL_FLAG_OCEAN;
-    if(highlands) out->flags |= COL_FLAG_HIGHLANDS;
-    if((out->flags & COL_FLAG_SAND_BEACH) && !(out->flags & COL_FLAG_OCEAN)) out->top_block = BLK_SAND;
-    if(highlands && h > 24 && !is_ocean) out->top_block = BLK_STONE;
-
-    if(biome == BIOME_DARK_FOREST && (noise2_u16(gx+321, gz+888) & 31) == 0) out->deco_light |= DECO_LIGHT_MOSS;
-    if(is_desert && h >= 15 && !(out->flags & COL_FLAG_SAND_BEACH) &&
-       (noise2_u16(gx+501, gz+901) & 255) < (u32)(highlands ? 12 : 10)) out->deco_light |= DECO_LIGHT_CACTUS;
-    if((biome == BIOME_GRASSLAND || biome == BIOME_DARK_FOREST || biome == BIOME_JUNGLE) &&
-       h >= 15 && !(out->flags & COL_FLAG_SAND_BEACH) && !is_ocean){
-        int chance = (biome == BIOME_JUNGLE) ? (highlands ? 5 : 7)
-                   : (biome == BIOME_DARK_FOREST) ? (highlands ? 9 : 14)
-                   : (highlands ? 20 : 24);
-        if((noise2_u16(gx+101, gz+777) & 1023) < (u32)chance) out->deco_heavy |= DECO_HEAVY_TREE;
-    }
-    if(highlands && out->top_block == BLK_STONE && h >= 16 && h < CH-3 &&
-       (noise2_u16(gx+333, gz+999) & 4095) < 2) out->deco_heavy |= DECO_HEAVY_LAVA;
-}
-
-static void write_base_column(int x, int z, const ColumnGenDesc* desc){
-    const int plane_stride = CW * CD;
-    u8* col = &world[phys_z_from_local(z) * CW + phys_x_from_local(x)];
-    for(int y=0; y<CH; y++, col += plane_stride) *col = 0;
-    col = &world[phys_z_from_local(z) * CW + phys_x_from_local(x)];
-
-    if(desc->flags & COL_FLAG_NETHER){
-        int gx = global_x_from_local(x);
-        int gz = global_z_from_local(z);
-        int h = desc->surface_y + 1;
-        int roof_y = desc->nether_roof_y;
-        int lava_top = 12;
-        int stal_len = 0;
-        int stal_blk = BLK_NETHERRACK;
-        col[0] = BLK_BEDROCK+1;
-        col[(CH-1) * plane_stride] = BLK_BEDROCK+1;
-        if((noise2_u16(gx + 611, gz + 877) & 255) < 54){
-            stal_len = 2 + ((noise2_u16(gx + 177, gz + 333) >> 8) & 7);
-            if(roof_y - stal_len < h + 6) stal_len = clamp_int(roof_y - (h + 6), 0, 10);
-            if((noise2_u16(gx + 921, gz + 71) & 63) < 18) stal_blk = BLK_BASALT;
-        }
-        for(int y=1; y<CH-1; y++){
-            if(y < h) col[y * plane_stride] = BLK_NETHERRACK+1;
-            else if(y < lava_top) col[y * plane_stride] = BLK_LAVA+1;
-            else if(y >= roof_y) col[y * plane_stride] = BLK_NETHERRACK+1;
-            else if(stal_len > 0 && y >= roof_y - stal_len) col[y * plane_stride] = (u8)(stal_blk + 1);
-        }
-        return;
-    }
-
-    if(desc->flags & COL_FLAG_SUPERFLAT){
-        const int flatHeight = 10;
-        col[0] = BLK_BEDROCK+1;
-        for(int y=1; y<flatHeight-3; y++) col[y * plane_stride] = BLK_STONE+1;
-        for(int y=flatHeight-3; y<flatHeight; y++) col[y * plane_stride] = BLK_DIRT+1;
-        col[flatHeight * plane_stride] = BLK_GRASS+1;
-        return;
-    }
-
-    const int seaLevel = 14;
-    int h = desc->surface_y;
-    u8 fillBlock = BLK_DIRT;
-    if(desc->biome == BIOME_DESERT || (desc->flags & COL_FLAG_SAND_BEACH)) fillBlock = BLK_SAND;
-    else if(desc->flags & COL_FLAG_OCEAN) fillBlock = BLK_CLAY;
-    if((desc->flags & COL_FLAG_HIGHLANDS) && desc->top_block == BLK_STONE) fillBlock = BLK_STONE;
-
-    col[0] = BLK_BEDROCK+1;
-    for(int y=1; y<CH; y++){
-        if      (y < h-4)                col[y * plane_stride] = BLK_STONE+1;
-        else if (y < h)                  col[y * plane_stride] = fillBlock+1;
-        else if (y == h)                 col[y * plane_stride] = desc->top_block+1;
-        else if (y <= seaLevel && y > h) col[y * plane_stride] = BLK_WATER+1;
-    }
-}
-
-static void apply_overworld_column_features(int x, int z, const ColumnGenDesc* desc){
-    if(desc->flags & (COL_FLAG_NETHER | COL_FLAG_SUPERFLAT)) return;
-    const int plane_stride = CW * CD;
-    u8* col = &world[phys_z_from_local(z) * CW + phys_x_from_local(x)];
-    int gx = global_x_from_local(x);
-    int gz = global_z_from_local(z);
-    int ravine_count = collect_ravines_for_column(gx, gz, g_ravine_work, MAX_COLUMN_RAVINES);
-    carve_overworld_column(gx, gz, desc, col, plane_stride);
-    apply_ravine_list_to_column(gx, gz, desc, col, plane_stride, g_ravine_work, ravine_count, false);
-    place_cave_lava_in_column(gx, gz, col, plane_stride);
-    apply_ravine_list_to_column(gx, gz, desc, col, plane_stride, g_ravine_work, ravine_count, true);
-    place_overworld_ores_in_column(gx, gz, desc, col, plane_stride);
-    apply_mineshafts_to_column(gx, gz, col, plane_stride);
-}
-
-static void decorate_light_column_from_desc(int x, int z, const ColumnGenDesc* desc){
-    int gx = global_x_from_local(x);
-    int gz = global_z_from_local(z);
-    if(desc->flags & COL_FLAG_SUPERFLAT) return;
-
-    const int seaLevel = 14;
-    int h = desc->surface_y;
-    bool sandBeach = (desc->flags & COL_FLAG_SAND_BEACH) != 0;
-    bool is_desert = (desc->biome == BIOME_DESERT);
-
-    if(desc->deco_light & DECO_LIGHT_MOSS){
-        world[widx(x,h,z)] = BLK_MOSSY_COBBLE+1;
-    }
-
-    if((desc->deco_light & DECO_LIGHT_CACTUS) && is_desert && h >= seaLevel + 1 && !sandBeach){
-        int ch = 2 + (noise2_u16(gx+77, gz+19) & 1);
-        for(int i=0; i<ch && (h+1+i) < CH-1; i++) world[widx(x, h+1+i, z)] = BLK_CACTUS+1;
-    }
-}
-
-static void decorate_heavy_column_from_desc(int x, int z, const ColumnGenDesc* desc){
-    int gx = global_x_from_local(x);
-    int gz = global_z_from_local(z);
-
-    if(desc->flags & COL_FLAG_NETHER){
-        if(desc->deco_heavy & DECO_HEAVY_FORTRESS){
-            int base_y = 14 + (noise2_u16(gx + 77, gz + 33) & 3);
-            place_nether_fortress(x, z, base_y, gx, gz);
-        }
-        return;
-    }
-
-    if(desc->flags & COL_FLAG_SUPERFLAT) return;
-
-    int h = desc->surface_y;
-    bool highlands = (desc->flags & COL_FLAG_HIGHLANDS) != 0;
-    bool is_ocean = (desc->flags & COL_FLAG_OCEAN) != 0;
-    bool sandBeach = (desc->flags & COL_FLAG_SAND_BEACH) != 0;
-    bool is_grass = (desc->biome == BIOME_GRASSLAND);
-    bool is_dark_forest = (desc->biome == BIOME_DARK_FOREST);
-    bool is_jungle = (desc->biome == BIOME_JUNGLE);
-
-    if((desc->deco_heavy & DECO_HEAVY_TREE) && (is_grass || is_dark_forest || is_jungle) && !sandBeach && !is_ocean){
-        u8 tree_wood = BLK_WOOD;
-        u8 tree_leaf = BLK_LEAF;
-        if(is_dark_forest){ tree_wood = BLK_WOOD_DARK; tree_leaf = BLK_LEAF_DARK; }
-        else if(is_jungle){ tree_wood = BLK_WOOD_LIGHT; tree_leaf = BLK_LEAF_LIGHT; }
-        int ty = h + 1;
-        int th = (is_jungle ? 6 : 4) + (noise2_u16(gx+55, gz+33) & 1);
-        for(int i=0; i<th && ty+i < CH; i++) world[widx(x, ty+i, z)] = tree_wood+1;
-        int top = ty + th;
-        for(int dy=-2; dy<=2; dy++) for(int dx=-2; dx<=2; dx++) for(int dz=-2; dz<=2; dz++){
-            if(abs(dx)+abs(dz) > 3) continue;
-            int lx = x + dx;
-            int ly = top + dy;
-            int lz = z + dz;
-            if(lx>=0 && lx<CW && ly>=0 && ly<CH && lz>=0 && lz<CD){
-                if(world[widx(lx,ly,lz)] == 0) world[widx(lx,ly,lz)] = tree_leaf+1;
-            }
-        }
-    }
-
-    if((desc->deco_heavy & DECO_HEAVY_LAVA) && highlands && desc->top_block == BLK_STONE && h >= 16 && h < CH-3){
-        for(int dz=-2; dz<=2; dz++){
-            for(int dx=-2; dx<=2; dx++){
-                int lx = x + dx;
-                int lz = z + dz;
-                if(lx <= 1 || lx >= CW-2 || lz <= 1 || lz >= CD-2) continue;
-                if(abs(dx) <= 1 && abs(dz) <= 1) world[widx(lx, h, lz)] = BLK_LAVA+1;
-                else world[widx(lx, h, lz)] = BLK_STONE+1;
-            }
-        }
-    }
-}
-
-static bool stream_rect_near_player(StreamRect rect, int dist){
-    int px = F2I(pl.pos.x);
-    int pz = F2I(pl.pos.z);
-    int dx = 0, dz = 0;
-    if(px < rect.x0) dx = rect.x0 - px;
-    else if(px >= rect.x1) dx = px - (rect.x1 - 1);
-    if(pz < rect.z0) dz = rect.z0 - pz;
-    else if(pz >= rect.z1) dz = pz - (rect.z1 - 1);
-    return dx <= dist && dz <= dist;
-}
+#define MAX_COLUMN_RAVINES 12
 
 typedef struct {
+    bool active;
+    bool guaranteed;
+    int center_x;
+    int center_z;
+    int length;
+    int yaw;
+    int steps;
+    int bottom_y;
+    int width_min;
+    int width_max;
+    int bbox_x0;
+    int bbox_x1;
+    int bbox_z0;
+    int bbox_z1;
+    u32 seed;
+} RavineDesc;
+
+static EWRAM_DATA RavineDesc g_ravine_work[MAX_COLUMN_RAVINES];
+#define RAVINE_REGION_SIZE 96
+#define RAVINE_GRID_W ((VW + RAVINE_REGION_SIZE - 1) / RAVINE_REGION_SIZE)
+#define RAVINE_GRID_D ((VD + RAVINE_REGION_SIZE - 1) / RAVINE_REGION_SIZE)
+static EWRAM_DATA RavineDesc g_ravine_guaranteed_cache[3];
+static EWRAM_DATA int g_ravine_guaranteed_count = 0;
+static EWRAM_DATA RavineDesc g_ravine_region_cache[RAVINE_GRID_W * RAVINE_GRID_D];
+static EWRAM_DATA u8 g_ravine_region_cache_valid[RAVINE_GRID_W * RAVINE_GRID_D];
+static EWRAM_DATA bool g_ravine_cache_ready;
+static EWRAM_DATA u32 g_ravine_cache_seed;
+static EWRAM_DATA WorldType g_ravine_cache_world_type;
+static EWRAM_DATA int g_ravine_cache_dimension;
+static const u16 inv_small_q12_lut[29] = {
+    0, 4096, 2048, 1365, 1024, 819, 682, 585, 512, 455,
+    409, 372, 341, 315, 292, 273, 256, 240, 227, 215,
+    204, 195, 186, 178, 170, 163, 157, 151, 146
+};
+
+typedef struct {
+    bool along_x;
+    int line;
     int start;
     int end;
-} WrappedSpan;
+    int start_y;
+    int end_y;
+    u8 support_phase;
+    bool tracks;
+    bool web_room;
+} MineshaftSegment;
 
-static int split_wrapped_span(int origin, int size, int start, int end, WrappedSpan out[2]){
-    int len = end - start;
-    int p0 = origin + start;
-    if(p0 >= size) p0 -= size;
-    if(len <= 0) return 0;
-    if(p0 + len <= size){
-        out[0].start = p0;
-        out[0].end = p0 + len;
-        return 1;
-    }
-    out[0].start = p0;
-    out[0].end = size;
-    out[1].start = 0;
-    out[1].end = len - (size - p0);
-    return 2;
-}
+#define MAX_MINESHAFT_SEGMENTS 6
+typedef struct {
+    bool active;
+    int hub_x;
+    int hub_z;
+    int hub_y;
+    int segment_count;
+    MineshaftSegment segments[MAX_MINESHAFT_SEGMENTS];
+} MineshaftDesc;
 
-static void clear_strip_region(const StreamRect* r){
-    WrappedSpan zspans[2], xspans[2];
-    int zcount = split_wrapped_span(g_world_ring_z, CD, r->z0, r->z1, zspans);
-    int xcount = split_wrapped_span(g_world_ring_x, CW, r->x0, r->x1, xspans);
-    for(int y=0; y<CH; y++){
-        int ybase = y * CD * CW;
-        for(int zi=0; zi<zcount; zi++){
-            for(int z=zspans[zi].start; z<zspans[zi].end; z++){
-                int base = ybase + z * CW;
-                for(int xi=0; xi<xcount; xi++){
-                    memset(&world[base + xspans[xi].start], 0, (size_t)(xspans[xi].end - xspans[xi].start));
-                }
-            }
-        }
+static inline void carve_column_range(u8* col, int plane_stride, int y0, int y1){
+    y0 = clamp_int(y0, 1, CH - 2);
+    y1 = clamp_int(y1, 1, CH - 2);
+    for(int y = y0; y <= y1; y++){
+        int idx = y * plane_stride;
+        if(col[idx] == BLK_BEDROCK + 1) continue;
+        col[idx] = 0;
     }
 }
 
-static int prepare_slice_desc(StreamRect rect, int line, bool x_major){
-    int idx = 0;
-    if(x_major){
-        for(int z=rect.z0; z<rect.z1; z++){
-            prepare_column_desc(global_x_from_local(line), global_z_from_local(z), &g_stream_desc[idx++]);
-        }
-    } else {
-        for(int x=rect.x0; x<rect.x1; x++){
-            prepare_column_desc(global_x_from_local(x), global_z_from_local(line), &g_stream_desc[idx++]);
-        }
-    }
-    return idx;
+static inline void set_column_block(u8* col, int plane_stride, int y, u8 block_id){
+    if(y < 1 || y >= CH - 1) return;
+    col[y * plane_stride] = block_id;
 }
 
-static void apply_slice_base(StreamRect rect, int line, bool x_major, int count){
-    int idx = 0;
-    if(x_major){
-        for(int z=rect.z0; z<rect.z1 && idx<count; z++) write_base_column(line, z, &g_stream_desc[idx++]);
-    } else {
-        for(int x=rect.x0; x<rect.x1 && idx<count; x++) write_base_column(x, line, &g_stream_desc[idx++]);
+static inline int lerp_int_round(int a, int b, int num, int den){
+    if(den <= 0) return a;
+    if(a == b) return a;
+    if(b > a) return a + (((b - a) * num) + (den >> 1)) / den;
+    return a - (((a - b) * num) + (den >> 1)) / den;
+}
+
+static void finalize_ravine_desc(RavineDesc* rav){
+    int steps = rav->steps;
+    rav->steps = steps;
+    rav->bbox_x0 = VW;
+    rav->bbox_x1 = -1;
+    rav->bbox_z0 = VD;
+    rav->bbox_z1 = -1;
+
+    u32 state = rav->seed;
+    int yaw = rav->yaw;
+    int half_len = rav->length >> 1;
+    int width_span = rav->width_max - rav->width_min;
+    int taper_inv_q12 = (steps > 1 && steps <= 29) ? inv_small_q12_lut[steps - 1] : 0;
+    fix step_len = (steps > 1) ? fdivi(I2F(rav->length), I2F(steps - 1)) : I2F(rav->length);
+    fix posx = I2F(rav->center_x) + F(0.5f) - fmuli(fcos(yaw), I2F(half_len));
+    fix posz = I2F(rav->center_z) + F(0.5f) - fmuli(fsin(yaw), I2F(half_len));
+
+    for(int step = 0; step < steps; step++){
+        int dist_to_end = step;
+        int tail = (steps - 1) - step;
+        int taper = (dist_to_end < tail) ? dist_to_end : tail;
+        int hr = rav->width_min;
+        int bottom_y = rav->bottom_y + rng_next_range(&state, -1, 1);
+        if(steps > 1) hr += (width_span * taper * 2 * taper_inv_q12) >> 12;
+        (void)bottom_y;
+
+        int cx8 = (int)(posx >> 13);
+        int cz8 = (int)(posz >> 13);
+        int cx = cx8 >> 3;
+        int cz = cz8 >> 3;
+        int r = hr + 1;
+        if(cx - r < rav->bbox_x0) rav->bbox_x0 = cx - r;
+        if(cx + r > rav->bbox_x1) rav->bbox_x1 = cx + r;
+        if(cz - r < rav->bbox_z0) rav->bbox_z0 = cz - r;
+        if(cz + r > rav->bbox_z1) rav->bbox_z1 = cz + r;
+
+        posx += fmuli(fcos(yaw), step_len);
+        posz += fmuli(fsin(yaw), step_len);
+        yaw = (yaw + rng_next_range(&state, -10, 10)) & (LUT_N - 1);
     }
 }
 
-static void apply_slice_light(StreamRect rect, int line, bool x_major, int count){
-    int idx = 0;
-    if(x_major){
-        for(int z=rect.z0; z<rect.z1 && idx<count; z++) decorate_light_column_from_desc(line, z, &g_stream_desc[idx++]);
-    } else {
-        for(int x=rect.x0; x<rect.x1 && idx<count; x++) decorate_light_column_from_desc(x, line, &g_stream_desc[idx++]);
-    }
+static void validate_ravine_cache(void){
+    if(g_ravine_cache_ready &&
+       g_ravine_cache_seed == g_world_seed &&
+       g_ravine_cache_world_type == g_world_type &&
+       g_ravine_cache_dimension == g_dimension) return;
+
+    g_ravine_cache_ready = true;
+    g_ravine_cache_seed = g_world_seed;
+    g_ravine_cache_world_type = g_world_type;
+    g_ravine_cache_dimension = g_dimension;
+    g_ravine_guaranteed_count = 0;
+    memset(g_ravine_region_cache_valid, 0, sizeof(g_ravine_region_cache_valid));
 }
 
-static void apply_slice_features(StreamRect rect, int line, bool x_major, int count){
-    int idx = 0;
-    if(x_major){
-        for(int z=rect.z0; z<rect.z1 && idx<count; z++) apply_overworld_column_features(line, z, &g_stream_desc[idx++]);
-    } else {
-        for(int x=rect.x0; x<rect.x1 && idx<count; x++) apply_overworld_column_features(x, line, &g_stream_desc[idx++]);
-    }
-}
-
-static void apply_slice_heavy(StreamRect rect, int line, bool x_major, int count){
-    int idx = 0;
-    if(x_major){
-        for(int z=rect.z0; z<rect.z1 && idx<count; z++) decorate_heavy_column_from_desc(line, z, &g_stream_desc[idx++]);
-    } else {
-        for(int x=rect.x0; x<rect.x1 && idx<count; x++) decorate_heavy_column_from_desc(x, line, &g_stream_desc[idx++]);
-    }
-}
-
-static StreamRect stream_rect_padded(const StreamRect* r, int padding){
-    StreamRect out = {
-        r->x0 - padding,
-        r->x1 + padding,
-        r->z0 - padding,
-        r->z1 + padding
-    };
-    if(out.x0 < 0) out.x0 = 0;
-    if(out.z0 < 0) out.z0 = 0;
-    if(out.x1 > CW) out.x1 = CW;
-    if(out.z1 > CD) out.z1 = CD;
-    return out;
-}
-
-static bool stream_process_lines(StreamRect rect, int* cursor, StreamPhase phase, u16 budget_ticks){
-    bool x_major = ((rect.x1 - rect.x0) < CW);
-    int start = x_major ? rect.x0 : rect.z0;
-    int end = x_major ? rect.x1 : rect.z1;
-    u16 t0 = REG_TM3CNT_L;
-    if(*cursor < start) *cursor = start;
-    while(*cursor < end){
-        int count = prepare_slice_desc(rect, *cursor, x_major);
-        if(phase == STREAM_BASE) apply_slice_base(rect, *cursor, x_major, count);
-        else if(phase == STREAM_DECOR_LIGHT) apply_slice_light(rect, *cursor, x_major, count);
-        else apply_slice_heavy(rect, *cursor, x_major, count);
-        (*cursor)++;
-        if((u16)(REG_TM3CNT_L - t0) >= budget_ticks) break;
-    }
-    return *cursor >= end;
-}
-
-// Stream terrain features one column at a time so cave/ore work respects the frame budget.
-static bool stream_process_feature_columns(StreamRect rect, int* line_cursor, int* col_cursor, u16 budget_ticks){
-    bool x_major = ((rect.x1 - rect.x0) < CW);
-    int line_start = x_major ? rect.x0 : rect.z0;
-    int line_end = x_major ? rect.x1 : rect.z1;
-    int col_start = x_major ? rect.z0 : rect.x0;
-    int col_end = x_major ? rect.z1 : rect.x1;
-    u16 t0 = REG_TM3CNT_L;
-
-    if(*line_cursor < line_start){
-        *line_cursor = line_start;
-        *col_cursor = col_start;
-    }
-
-    while(*line_cursor < line_end){
-        if(*col_cursor < col_start) *col_cursor = col_start;
-        while(*col_cursor < col_end){
-            int x = x_major ? *line_cursor : *col_cursor;
-            int z = x_major ? *col_cursor : *line_cursor;
-            ColumnGenDesc desc;
-            prepare_column_desc(global_x_from_local(x), global_z_from_local(z), &desc);
-            apply_overworld_column_features(x, z, &desc);
-            (*col_cursor)++;
-            if((u16)(REG_TM3CNT_L - t0) >= budget_ticks) return false;
-        }
-        (*line_cursor)++;
-        *col_cursor = col_start;
-    }
-
+static bool build_guaranteed_ravine_desc(RavineDesc* out, int variant){
+    if(g_dimension != 0 || g_world_type == WORLD_SUPERFLAT) return false;
+    u32 state = hash_region(0x52415631u, variant * 97, variant * 29, 0);
+    memset(out, 0, sizeof(*out));
+    out->active = true;
+    out->guaranteed = true;
+    out->center_x = rng_next_range(&state, 96, VW - 97);
+    out->center_z = rng_next_range(&state, 96, VD - 97);
+    out->length = rng_next_range(&state, 112, 164);
+    out->yaw = rng_next_range(&state, 0, LUT_N - 1);
+    out->steps = rng_next_range(&state, 20, 28);
+    out->bottom_y = rng_next_range(&state, 2, 5);
+    out->width_min = rng_next_range(&state, 4, 6);
+    out->width_max = rng_next_range(&state, 9, (g_world_type == WORLD_HIGHLANDS) ? 13 : 11);
+    out->seed = mix32(state ^ 0x6C617661u);
+    finalize_ravine_desc(out);
     return true;
 }
 
-static bool stream_feature_phase_step(void){
-    while(g_stream_state.feature_rect_index < g_stream_state.rect_count){
-        StreamRect rect = stream_rect_padded(&g_stream_state.rects[g_stream_state.feature_rect_index], STREAM_BASE_PADDING);
-        if(stream_process_feature_columns(rect, &g_stream_state.feature_line_cursor, &g_stream_state.feature_col_cursor, STREAM_BUDGET_FEATURE_TICKS)){
-            g_stream_state.feature_rect_index++;
-            g_stream_state.feature_line_cursor = 0;
-            g_stream_state.feature_col_cursor = 0;
+static bool build_regional_ravine_desc(int region_x, int region_z, RavineDesc* out){
+    if(g_dimension != 0 || g_world_type == WORLD_SUPERFLAT) return false;
+    u32 state = hash_region(0x52415632u, region_x, region_z, 0);
+    int chance = (g_world_type == WORLD_HIGHLANDS) ? 18 : 12;
+    if(rng_next_range(&state, 0, 99) >= chance) return false;
+    memset(out, 0, sizeof(*out));
+    out->active = true;
+    out->center_x = clamp_int(region_x * 96 + rng_next_range(&state, 18, 78), 62, VW - 63);
+    out->center_z = clamp_int(region_z * 96 + rng_next_range(&state, 18, 78), 62, VD - 63);
+    out->length = rng_next_range(&state, 96, (g_world_type == WORLD_HIGHLANDS) ? 156 : 136);
+    out->yaw = rng_next_range(&state, 0, LUT_N - 1);
+    out->steps = rng_next_range(&state, 18, 26);
+    out->bottom_y = rng_next_range(&state, 2, 7);
+    out->width_min = rng_next_range(&state, 4, 6);
+    out->width_max = rng_next_range(&state, 8, (g_world_type == WORLD_HIGHLANDS) ? 12 : 10);
+    out->seed = mix32(state ^ 0x63686173u);
+    finalize_ravine_desc(out);
+    return true;
+}
+
+static void apply_ravine_desc_to_column(int gx, int gz, const ColumnGenDesc* desc, u8* col, int plane_stride, const RavineDesc* rav, bool lava_only){
+    if(!rav->active) return;
+    if(gx < rav->bbox_x0 || gx > rav->bbox_x1 || gz < rav->bbox_z0 || gz > rav->bbox_z1) return;
+    u32 state = rav->seed;
+    int yaw = rav->yaw;
+    int steps = rav->steps;
+    int half_len = rav->length >> 1;
+    int width_span = rav->width_max - rav->width_min;
+    int taper_inv_q12 = (steps > 1 && steps <= 29) ? inv_small_q12_lut[steps - 1] : 0;
+    fix step_len = (steps > 1) ? fdivi(I2F(rav->length), I2F(steps - 1)) : I2F(rav->length);
+    fix posx = I2F(rav->center_x) + F(0.5f) - fmuli(fcos(yaw), I2F(half_len));
+    fix posz = I2F(rav->center_z) + F(0.5f) - fmuli(fsin(yaw), I2F(half_len));
+
+    for(int step = 0; step < steps; step++){
+        int dist_to_end = step;
+        int tail = (steps - 1) - step;
+        int taper = (dist_to_end < tail) ? dist_to_end : tail;
+        int hr = rav->width_min;
+        int bottom_y = rav->bottom_y + rng_next_range(&state, -1, 1);
+        int top_y = (desc->flags & COL_FLAG_OCEAN) ? 12 : clamp_int((int)desc->surface_y + (rav->guaranteed ? 3 : 1), 10, CH - 2);
+        bool allow_surface = (desc->flags & COL_FLAG_OCEAN) == 0 && step > 1 && step + 2 < steps;
+
+        if(steps > 1) hr += (width_span * taper * 2 * taper_inv_q12) >> 12;
+        bottom_y = clamp_int(bottom_y, 2, 8);
+        if(top_y < bottom_y + 8) top_y = bottom_y + 8;
+        if(top_y > CH - 2) top_y = CH - 2;
+
+        if(!lava_only){
+            int vr = (top_y - bottom_y) >> 1;
+            int cy = bottom_y + vr;
+            if(vr < 6) vr = 6;
+            carve_ellipsoid_in_column(
+                gx, gz, desc, col, plane_stride,
+                (int)(posx >> 13), (cy << 3) + 4, (int)(posz >> 13),
+                hr, vr, allow_surface
+            );
+        } else if(step > 1 && step + 2 < steps &&
+                  (rav->guaranteed || step == (steps >> 1) || step == ((steps >> 1) + 2))){
+            int lava_radius = hr - 1;
+            if(lava_radius < 2) lava_radius = 2;
+            place_cave_lava_pool_in_column(gx, gz, col, plane_stride, (int)(posx >> 13), ((bottom_y + 1) << 3) + 4, (int)(posz >> 13), lava_radius);
+        }
+
+        posx += fmuli(fcos(yaw), step_len);
+        posz += fmuli(fsin(yaw), step_len);
+        yaw = (yaw + rng_next_range(&state, -10, 10)) & (LUT_N - 1);
+    }
+}
+
+static int collect_ravines_for_column(int gx, int gz, RavineDesc* out, int max_count){
+    validate_ravine_cache();
+    int count = 0;
+    int guaranteed_count = (g_world_type == WORLD_HIGHLANDS) ? 3 : 2;
+    while(g_ravine_guaranteed_count < guaranteed_count){
+        if(build_guaranteed_ravine_desc(&g_ravine_guaranteed_cache[g_ravine_guaranteed_count], g_ravine_guaranteed_count)){
+            g_ravine_guaranteed_count++;
         } else {
-            return false;
+            break;
         }
     }
+    for(int i = 0; i < g_ravine_guaranteed_count; i++){
+        if(count >= max_count) return count;
+        out[count++] = g_ravine_guaranteed_cache[i];
+    }
+
+    {
+        int region_x = gx / 96;
+        int region_z = gz / 96;
+        for(int rz = region_z - 1; rz <= region_z + 1; rz++){
+            if(rz < 0 || rz > ((VD - 1) / 96)) continue;
+            for(int rx = region_x - 1; rx <= region_x + 1; rx++){
+                if(rx < 0 || rx > ((VW - 1) / 96)) continue;
+                if(count >= max_count) return count;
+                int idx = rz * RAVINE_GRID_W + rx;
+                if(!g_ravine_region_cache_valid[idx]){
+                    memset(&g_ravine_region_cache[idx], 0, sizeof(g_ravine_region_cache[idx]));
+                    (void)build_regional_ravine_desc(rx, rz, &g_ravine_region_cache[idx]);
+                    g_ravine_region_cache_valid[idx] = 1;
+                }
+                if(g_ravine_region_cache[idx].active) out[count++] = g_ravine_region_cache[idx];
+            }
+        }
+    }
+    return count;
+}
+
+static void apply_ravine_list_to_column(int gx, int gz, const ColumnGenDesc* desc, u8* col, int plane_stride,
+                                        const RavineDesc* ravines, int ravine_count, bool lava_only){
+    for(int i = 0; i < ravine_count; i++){
+        apply_ravine_desc_to_column(gx, gz, desc, col, plane_stride, &ravines[i], lava_only);
+    }
+}
+
+static bool append_mineshaft_segment(MineshaftDesc* shaft, bool along_x, int line, int start, int end, int start_y, int end_y, u32* state, bool web_room){
+    if(shaft->segment_count >= MAX_MINESHAFT_SEGMENTS) return false;
+    shaft->segments[shaft->segment_count].along_x = along_x;
+    shaft->segments[shaft->segment_count].line = line;
+    shaft->segments[shaft->segment_count].start = start;
+    shaft->segments[shaft->segment_count].end = end;
+    shaft->segments[shaft->segment_count].start_y = clamp_int(start_y, 6, 18);
+    shaft->segments[shaft->segment_count].end_y = clamp_int(end_y, 6, 18);
+    shaft->segments[shaft->segment_count].support_phase = (u8)rng_next_range(state, 0, 4);
+    shaft->segments[shaft->segment_count].tracks = rng_next_range(state, 0, 99) < 50;
+    shaft->segments[shaft->segment_count].web_room = web_room;
+    shaft->segment_count++;
     return true;
 }
 
-#if PERF_PROFILE
-static void perf_gen_reset(void){
-    g_prof_gen_total_ticks = 0;
-    g_prof_gen_terrain_ticks = 0;
-    g_prof_gen_detail_ticks = 0;
-    g_prof_gen_light_ticks = 0;
-    g_prof_gen_decor_ticks = 0;
-    g_prof_gen_detail_max_line_ticks = 0;
-    g_prof_gen_detail_columns = 0;
-}
-#endif
+static bool build_guaranteed_mineshaft_desc(MineshaftDesc* out, int variant){
+    if(g_dimension != 0 || g_world_type == WORLD_SUPERFLAT) return false;
 
-static void regenerate_region(int x0, int x1, int z0, int z1){
-    if(x0 < 0) x0 = 0;
-    if(z0 < 0) z0 = 0;
-    if(x1 > CW) x1 = CW;
-    if(z1 > CD) z1 = CD;
-    if(x0 >= x1 || z0 >= z1) return;
-    StreamRect rect = { x0, x1, z0, z1 };
-    bool x_major = ((rect.x1 - rect.x0) < CW);
-    int line_start = x_major ? rect.x0 : rect.z0;
-    int line_end = x_major ? rect.x1 : rect.z1;
-    for(int line=line_start; line<line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_base(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_terrain_ticks += prof_elapsed(pt);
-#endif
-    }
-    for(int line=line_start; line<line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_features(rect, line, x_major, count);
-#if PERF_PROFILE
-        u32 dt = prof_elapsed(pt);
-        g_prof_gen_detail_ticks += dt;
-        g_prof_gen_detail_columns += (u32)count;
-        prof_record_max(&g_prof_gen_detail_max_line_ticks, dt);
-#endif
-    }
-    for(int line=line_start; line<line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_light(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_light_ticks += prof_elapsed(pt);
-#endif
-    }
-    for(int line=line_start; line<line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_heavy(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_decor_ticks += prof_elapsed(pt);
-#endif
-    }
-}
+    u32 state = hash_region(0x4D534831u, variant * 41, variant * 113, 0);
+    int branch_target;
+    int dir_used[4] = {0, 0, 0, 0};
+    memset(out, 0, sizeof(*out));
 
-static void gen_world(void){
-#if PERF_PROFILE
-    perf_gen_reset();
-#endif
-    memset(world, 0, sizeof(world));
-    regenerate_region(0, CW, 0, CD);
-#if PERF_PROFILE
-    g_prof_gen_total_ticks = g_prof_gen_terrain_ticks + g_prof_gen_detail_ticks +
-                             g_prof_gen_light_ticks + g_prof_gen_decor_ticks;
-    g_prof_gen_runs++;
-    perf_debug_trap();
-#endif
-}
+    out->active = true;
+    out->hub_x = rng_next_range(&state, 72, VW - 73);
+    out->hub_z = rng_next_range(&state, 72, VD - 73);
+    out->hub_y = rng_next_range(&state, 7, 16);
+    branch_target = rng_next_range(&state, 3, 5);
 
-static void gen_world_with_progress_callback(int start_percent, int end_percent, void (*progress_cb)(int)){
-    StreamRect rect = { 0, CW, 0, CD };
-    bool x_major = ((rect.x1 - rect.x0) < CW);
-    int line_start = x_major ? rect.x0 : rect.z0;
-    int line_end = x_major ? rect.x1 : rect.z1;
-    int total_lines = line_end - line_start;
-    int total_steps = total_lines * 4;
-    int completed_steps = 0;
-    int span = end_percent - start_percent;
-
-#if PERF_PROFILE
-    perf_gen_reset();
-#endif
-    memset(world, 0, sizeof(world));
-    if(progress_cb) progress_cb(start_percent);
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_base(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_terrain_ticks += prof_elapsed(pt);
-#endif
-        completed_steps++;
-        if(progress_cb) progress_cb(start_percent + (completed_steps * span) / (total_steps ? total_steps : 1));
-    }
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_features(rect, line, x_major, count);
-#if PERF_PROFILE
-        u32 dt = prof_elapsed(pt);
-        g_prof_gen_detail_ticks += dt;
-        g_prof_gen_detail_columns += (u32)count;
-        prof_record_max(&g_prof_gen_detail_max_line_ticks, dt);
-#endif
-        completed_steps++;
-        if(progress_cb) progress_cb(start_percent + (completed_steps * span) / (total_steps ? total_steps : 1));
-    }
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_light(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_light_ticks += prof_elapsed(pt);
-#endif
-        completed_steps++;
-        if(progress_cb) progress_cb(start_percent + (completed_steps * span) / (total_steps ? total_steps : 1));
-    }
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_heavy(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_decor_ticks += prof_elapsed(pt);
-#endif
-        completed_steps++;
-        if(progress_cb) progress_cb(start_percent + (completed_steps * span) / (total_steps ? total_steps : 1));
-    }
-#if PERF_PROFILE
-    g_prof_gen_total_ticks = g_prof_gen_terrain_ticks + g_prof_gen_detail_ticks +
-                             g_prof_gen_light_ticks + g_prof_gen_decor_ticks;
-    g_prof_gen_runs++;
-    perf_debug_trap();
-#endif
-}
-
-static void gen_world_with_progress_screen(const char* title){
-    ProgressScreenState screen;
-    StreamRect rect = { 0, CW, 0, CD };
-    bool x_major = ((rect.x1 - rect.x0) < CW);
-    int line_start = x_major ? rect.x0 : rect.z0;
-    int line_end = x_major ? rect.x1 : rect.z1;
-    int total_lines = line_end - line_start;
-    int total_steps = total_lines * 4;
-    int completed_steps = 0;
-    progress_screen_begin(&screen);
-#if PERF_PROFILE
-    perf_gen_reset();
-#endif
-    memset(world, 0, sizeof(world));
-    draw_progress_screen(title, "TERRAIN", 0);
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_base(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_terrain_ticks += prof_elapsed(pt);
-#endif
-        completed_steps++;
-        draw_progress_screen(title, "TERRAIN", (completed_steps * 100) / (total_steps ? total_steps : 1));
-    }
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_features(rect, line, x_major, count);
-#if PERF_PROFILE
-        u32 dt = prof_elapsed(pt);
-        g_prof_gen_detail_ticks += dt;
-        g_prof_gen_detail_columns += (u32)count;
-        prof_record_max(&g_prof_gen_detail_max_line_ticks, dt);
-#endif
-        completed_steps++;
-        draw_progress_screen(title, "DETAIL", (completed_steps * 100) / (total_steps ? total_steps : 1));
-    }
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_light(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_light_ticks += prof_elapsed(pt);
-#endif
-        completed_steps++;
-        draw_progress_screen(title, "LIGHT", (completed_steps * 100) / (total_steps ? total_steps : 1));
-    }
-    for(int line = line_start; line < line_end; line++){
-#if PERF_PROFILE
-        u16 pt = prof_now();
-#endif
-        int count = prepare_slice_desc(rect, line, x_major);
-        apply_slice_heavy(rect, line, x_major, count);
-#if PERF_PROFILE
-        g_prof_gen_decor_ticks += prof_elapsed(pt);
-#endif
-        completed_steps++;
-        draw_progress_screen(title, "DECOR", (completed_steps * 100) / (total_steps ? total_steps : 1));
-    }
-#if PERF_PROFILE
-    g_prof_gen_total_ticks = g_prof_gen_terrain_ticks + g_prof_gen_detail_ticks +
-                             g_prof_gen_light_ticks + g_prof_gen_decor_ticks;
-    g_prof_gen_runs++;
-    perf_debug_trap();
-#endif
-    progress_screen_end(&screen);
-}
-
-static int clamp_world_offset_x(int off){
-    if(off < 0) off = 0;
-    if(off > VW - CW) off = VW - CW;
-    return off;
-}
-
-static int clamp_world_offset_z(int off){
-    if(off < 0) off = 0;
-    if(off > VD - CD) off = VD - CD;
-    return off;
-}
-
-static void stream_center_on_global(int gx, int gz){
-    g_world_offset_x = clamp_world_offset_x(gx - (CW / 2));
-    g_world_offset_z = clamp_world_offset_z(gz - (CD / 2));
-}
-
-static void stream_reset_state(void){
-    memset(&g_stream_state, 0, sizeof(g_stream_state));
-    g_stream_state.phase = STREAM_IDLE;
-    g_world_ring_x = 0;
-    g_world_ring_z = 0;
-}
-
-static void shift_world_window(int dx, int dz){
-    g_world_ring_x = wrap_world_x(g_world_ring_x + dx);
-    g_world_ring_z = wrap_world_z(g_world_ring_z + dz);
-}
-
-static void stream_add_rect(int x0, int x1, int z0, int z1){
-    if(x0 < 0) x0 = 0;
-    if(z0 < 0) z0 = 0;
-    if(x1 > CW) x1 = CW;
-    if(z1 > CD) z1 = CD;
-    if(x0 >= x1 || z0 >= z1) return;
-    if(g_stream_state.rect_count >= 2) return;
-    g_stream_state.rects[g_stream_state.rect_count].x0 = x0;
-    g_stream_state.rects[g_stream_state.rect_count].x1 = x1;
-    g_stream_state.rects[g_stream_state.rect_count].z0 = z0;
-    g_stream_state.rects[g_stream_state.rect_count].z1 = z1;
-    g_stream_state.rect_count++;
-}
-
-static void stream_start(int new_off_x, int new_off_z){
-    new_off_x = clamp_world_offset_x(new_off_x);
-    new_off_z = clamp_world_offset_z(new_off_z);
-    if(new_off_x == g_world_offset_x && new_off_z == g_world_offset_z) return;
-    g_stream_state.active = true;
-    g_stream_state.phase = STREAM_SHIFT;
-    g_stream_state.old_off_x = g_world_offset_x;
-    g_stream_state.old_off_z = g_world_offset_z;
-    g_stream_state.new_off_x = new_off_x;
-    g_stream_state.new_off_z = new_off_z;
-    g_stream_state.prefetch_off_x = new_off_x;
-    g_stream_state.prefetch_off_z = new_off_z;
-    g_stream_state.shift_x = new_off_x - g_world_offset_x;
-    g_stream_state.shift_z = new_off_z - g_world_offset_z;
-    g_stream_state.rect_count = 0;
-    g_stream_state.base_rect_index = 0;
-    g_stream_state.base_cursor = 0;
-    g_stream_state.feature_rect_index = 0;
-    g_stream_state.feature_line_cursor = 0;
-    g_stream_state.feature_col_cursor = 0;
-    g_stream_state.light_rect_index = 0;
-    g_stream_state.light_cursor = 0;
-    g_stream_state.heavy_rect_index = 0;
-    g_stream_state.heavy_cursor = 0;
-    g_stream_state.edit_cursor = 0;
-}
-
-static void stream_queue_or_start(int new_off_x, int new_off_z){
-    new_off_x = clamp_world_offset_x(new_off_x);
-    new_off_z = clamp_world_offset_z(new_off_z);
-    if(g_stream_state.active){
-        g_stream_state.has_pending = true;
-        g_stream_state.pending_shift_x = new_off_x;
-        g_stream_state.pending_shift_z = new_off_z;
-    } else {
-        stream_start(new_off_x, new_off_z);
-    }
-}
-
-static bool stream_rect_contains_global(const StreamRect* r, int gx, int gz){
-    int lx = local_x_from_global(gx);
-    int lz = local_z_from_global(gz);
-    return lx >= r->x0 && lx < r->x1 && lz >= r->z0 && lz < r->z1;
-}
-
-static bool stream_phase_step(int* rect_index, int* cursor, StreamPhase phase, int padding, u16 budget_ticks){
-    while(*rect_index < g_stream_state.rect_count){
-        StreamRect rect = stream_rect_padded(&g_stream_state.rects[*rect_index], padding);
-        if(phase == STREAM_DECOR_HEAVY && stream_rect_near_player(rect, STREAM_HEAVY_NEAR_DIST)){
-            return false;
+    for(int i = 0; i < branch_target && out->segment_count < 4; i++){
+        int dir = rng_next_range(&state, 0, 3);
+        int tries = 0;
+        while(dir_used[dir] && tries < 8){
+            dir = (dir + 1) & 3;
+            tries++;
         }
-        if(stream_process_lines(rect, cursor, phase, budget_ticks)){
-            (*rect_index)++;
-            *cursor = 0;
+        if(dir_used[dir]) break;
+        dir_used[dir] = 1;
+
+        {
+            int length = rng_next_range(&state, 18, 34);
+            int end_y = clamp_int(out->hub_y + rng_next_range(&state, -2, 2), 6, 18);
+            bool web_room = rng_next_range(&state, 0, 99) < 35;
+            switch(dir){
+                case 0: append_mineshaft_segment(out, true, out->hub_z, out->hub_x + 2, clamp_int(out->hub_x + length, 3, VW - 4), out->hub_y, end_y, &state, web_room); break;
+                case 1: append_mineshaft_segment(out, true, out->hub_z, out->hub_x - 2, clamp_int(out->hub_x - length, 3, VW - 4), out->hub_y, end_y, &state, web_room); break;
+                case 2: append_mineshaft_segment(out, false, out->hub_x, out->hub_z + 2, clamp_int(out->hub_z + length, 3, VD - 4), out->hub_y, end_y, &state, web_room); break;
+                default: append_mineshaft_segment(out, false, out->hub_x, out->hub_z - 2, clamp_int(out->hub_z - length, 3, VD - 4), out->hub_y, end_y, &state, web_room); break;
+            }
+        }
+    }
+
+    while(out->segment_count < branch_target && out->segment_count < MAX_MINESHAFT_SEGMENTS){
+        int parent = rng_next_range(&state, 0, out->segment_count - 1);
+        MineshaftSegment* p = &out->segments[parent];
+        int span = abs(p->end - p->start);
+        int mid = (p->start + p->end) >> 1;
+        int start_y = lerp_int_round(p->start_y, p->end_y, span >> 1, span ? span : 1);
+        int end_y = clamp_int(start_y + rng_next_range(&state, -1, 2), 6, 18);
+        int length = rng_next_range(&state, 12, 22);
+        bool web_room = rng_next_range(&state, 0, 99) < 45;
+
+        if(p->along_x){
+            if(rng_next_range(&state, 0, 1) == 0)
+                append_mineshaft_segment(out, false, mid, p->line + 1, clamp_int(p->line + length, 3, VD - 4), start_y, end_y, &state, web_room);
+            else
+                append_mineshaft_segment(out, false, mid, p->line - 1, clamp_int(p->line - length, 3, VD - 4), start_y, end_y, &state, web_room);
         } else {
-            return false;
+            if(rng_next_range(&state, 0, 1) == 0)
+                append_mineshaft_segment(out, true, mid, p->line + 1, clamp_int(p->line + length, 3, VW - 4), start_y, end_y, &state, web_room);
+            else
+                append_mineshaft_segment(out, true, mid, p->line - 1, clamp_int(p->line - length, 3, VW - 4), start_y, end_y, &state, web_room);
         }
     }
+
     return true;
 }
 
-static inline bool stream_load_shed_active(void){
-    return g_stream_state.active && (g_stream_state.phase == STREAM_SHIFT ||
-                                     g_stream_state.phase == STREAM_BASE ||
-                                     g_stream_state.phase == STREAM_TERRAIN_FEATURES ||
-                                     g_stream_state.phase == STREAM_DECOR_LIGHT);
-}
+static bool build_mineshaft_desc(int region_x, int region_z, MineshaftDesc* out){
+    if(g_dimension != 0 || g_world_type == WORLD_SUPERFLAT) return false;
 
-static void stream_step(void){
-    if(!g_stream_state.active){
-        if(g_stream_state.has_pending){
-            int pending_x = g_stream_state.pending_shift_x;
-            int pending_z = g_stream_state.pending_shift_z;
-            g_stream_state.has_pending = false;
-            stream_start(pending_x, pending_z);
+    u32 state = hash_region(0x4D534846u, region_x, region_z, 0);
+    int chance = (g_world_type == WORLD_HIGHLANDS) ? 14 : 9;
+    int branch_target;
+    int dir_used[4] = {0, 0, 0, 0};
+    memset(out, 0, sizeof(*out));
+    if(rng_next_range(&state, 0, 99) >= chance) return false;
+
+    out->active = true;
+    out->hub_x = clamp_int(region_x * 80 + rng_next_range(&state, 16, 64), 12, VW - 13);
+    out->hub_z = clamp_int(region_z * 80 + rng_next_range(&state, 16, 64), 12, VD - 13);
+    out->hub_y = rng_next_range(&state, 7, 16);
+    branch_target = rng_next_range(&state, 3, 6);
+
+    for(int i = 0; i < branch_target && out->segment_count < 4; i++){
+        int dir = rng_next_range(&state, 0, 3);
+        int tries = 0;
+        while(dir_used[dir] && tries < 8){
+            dir = (dir + 1) & 3;
+            tries++;
         }
-        return;
+        if(dir_used[dir]) break;
+        dir_used[dir] = 1;
+
+        {
+            int length = rng_next_range(&state, 18, 34);
+            int end_y = clamp_int(out->hub_y + rng_next_range(&state, -2, 2), 6, 18);
+            bool web_room = rng_next_range(&state, 0, 99) < 35;
+            switch(dir){
+                case 0: append_mineshaft_segment(out, true, out->hub_z, out->hub_x + 2, clamp_int(out->hub_x + length, 3, VW - 4), out->hub_y, end_y, &state, web_room); break;
+                case 1: append_mineshaft_segment(out, true, out->hub_z, out->hub_x - 2, clamp_int(out->hub_x - length, 3, VW - 4), out->hub_y, end_y, &state, web_room); break;
+                case 2: append_mineshaft_segment(out, false, out->hub_x, out->hub_z + 2, clamp_int(out->hub_z + length, 3, VD - 4), out->hub_y, end_y, &state, web_room); break;
+                default: append_mineshaft_segment(out, false, out->hub_x, out->hub_z - 2, clamp_int(out->hub_z - length, 3, VD - 4), out->hub_y, end_y, &state, web_room); break;
+            }
+        }
     }
 
-    if(g_stream_state.phase == STREAM_DECOR_HEAVY && g_stream_state.has_pending){
-        g_stream_state.active = false;
-        g_stream_state.phase = STREAM_IDLE;
-        return;
+    while(out->segment_count < branch_target && out->segment_count < MAX_MINESHAFT_SEGMENTS){
+        int parent = rng_next_range(&state, 0, out->segment_count - 1);
+        MineshaftSegment* p = &out->segments[parent];
+        int span = abs(p->end - p->start);
+        int mid = (p->start + p->end) >> 1;
+        int start_y = lerp_int_round(p->start_y, p->end_y, span >> 1, span ? span : 1);
+        int end_y = clamp_int(start_y + rng_next_range(&state, -1, 2), 6, 18);
+        int length = rng_next_range(&state, 12, 22);
+        bool web_room = rng_next_range(&state, 0, 99) < 45;
+
+        if(p->along_x){
+            if(rng_next_range(&state, 0, 1) == 0)
+                append_mineshaft_segment(out, false, mid, p->line + 1, clamp_int(p->line + length, 3, VD - 4), start_y, end_y, &state, web_room);
+            else
+                append_mineshaft_segment(out, false, mid, p->line - 1, clamp_int(p->line - length, 3, VD - 4), start_y, end_y, &state, web_room);
+        } else {
+            if(rng_next_range(&state, 0, 1) == 0)
+                append_mineshaft_segment(out, true, mid, p->line + 1, clamp_int(p->line + length, 3, VW - 4), start_y, end_y, &state, web_room);
+            else
+                append_mineshaft_segment(out, true, mid, p->line - 1, clamp_int(p->line - length, 3, VW - 4), start_y, end_y, &state, web_room);
+        }
     }
 
-    switch(g_stream_state.phase){
-        case STREAM_SHIFT: {
-            int dx = g_stream_state.shift_x;
-            int dz = g_stream_state.shift_z;
-            g_world_offset_x = g_stream_state.new_off_x;
-            g_world_offset_z = g_stream_state.new_off_z;
+    return true;
+}
 
-            if(abs(dx) >= CW || abs(dz) >= CD){
-                g_world_ring_x = 0;
-                g_world_ring_z = 0;
-                gen_world();
-                apply_dimension_edits(g_dimension);
-                g_stream_state.phase = STREAM_IDLE;
-                g_stream_state.active = false;
-                break;
-            }
+static void apply_mineshaft_room_to_column(int gx, int gz, u8* col, int plane_stride, int room_x, int room_z, int floor_y, bool webs, u32 seed){
+    int dx = gx - room_x;
+    int dz = gz - room_z;
+    if(dx < -2 || dx > 2 || dz < -2 || dz > 2) return;
 
-            shift_world_window(dx, dz);
-            if(dz > 0) stream_add_rect(0, CW, CD - dz, CD);
-            else if(dz < 0) stream_add_rect(0, CW, 0, -dz);
-            if(dx > 0) stream_add_rect(CW - dx, CW, 0, CD);
-            else if(dx < 0) stream_add_rect(0, -dx, 0, CD);
-
-            pl.pos.x -= I2F(dx);
-            pl.pos.z -= I2F(dz);
-            for(int i=0; i<MAX_DROPPED_ITEMS; i++){
-                if(!g_dropped_items[i].active) continue;
-                g_dropped_items[i].pos.x -= I2F(dx);
-                g_dropped_items[i].pos.z -= I2F(dz);
-                if(g_dropped_items[i].pos.x < 0 || g_dropped_items[i].pos.x >= I2F(CW) ||
-                   g_dropped_items[i].pos.z < 0 || g_dropped_items[i].pos.z >= I2F(CD)){
-                    g_dropped_items[i].active = false;
-                }
+    carve_column_range(col, plane_stride, floor_y + 1, floor_y + 3);
+    set_column_block(col, plane_stride, floor_y, BLK_PLANK + 1);
+    if(abs(dx) == 2 && abs(dz) == 2){
+        set_column_block(col, plane_stride, floor_y + 1, BLK_WOOD + 1);
+        set_column_block(col, plane_stride, floor_y + 2, BLK_WOOD + 1);
+        set_column_block(col, plane_stride, floor_y + 3, BLK_WOOD + 1);
+    }
+    if(webs){
+        for(int y = floor_y + 1; y <= floor_y + 2; y++){
+            u32 cell = hash_region(seed, room_x + dx + 3, y, room_z + dz + 3);
+            if(abs(dx) >= 1 || abs(dz) >= 1){
+                if((cell & 7u) == 0u) set_column_block(col, plane_stride, y, BLK_GRAVEL + 1);
+                else if((cell & 7u) == 1u) set_column_block(col, plane_stride, y, BLK_MOSSY_COBBLE + 1);
             }
-            for(int i=0; i<MAX_BREAK_PARTICLES; i++){
-                if(!g_break_particles[i].active) continue;
-                g_break_particles[i].pos.x -= I2F(dx);
-                g_break_particles[i].pos.z -= I2F(dz);
-                if(g_break_particles[i].pos.x < 0 || g_break_particles[i].pos.x >= I2F(CW) ||
-                   g_break_particles[i].pos.z < 0 || g_break_particles[i].pos.z >= I2F(CD)){
-                    g_break_particles[i].active = false;
-                }
-            }
-            for(int i=0; i<MAX_TNT_ENTITIES; i++){
-                if(!g_tnt_entities[i].active) continue;
-                g_tnt_entities[i].x -= (s8)dx;
-                g_tnt_entities[i].z -= (s8)dz;
-                if(g_tnt_entities[i].x < 0 || g_tnt_entities[i].x >= CW ||
-                   g_tnt_entities[i].z < 0 || g_tnt_entities[i].z >= CD){
-                    g_tnt_entities[i].active = false;
-                }
-            }
-            if(g_mining_x >= 0){
-                g_mining_x -= dx;
-                g_mining_z -= dz;
-                if(g_mining_x < 0 || g_mining_x >= CW || g_mining_z < 0 || g_mining_z >= CD){
-                    g_mining_x = g_mining_y = g_mining_z = -1;
-                    g_mining_ticks = 0;
-                }
-            }
-            for(int i=0; i<g_stream_state.rect_count; i++) clear_strip_region(&g_stream_state.rects[i]);
-            g_stream_state.phase = STREAM_BASE;
-            g_stream_state.base_rect_index = 0;
-            g_stream_state.base_cursor = 0;
-            g_stream_state.feature_rect_index = 0;
-            g_stream_state.feature_line_cursor = 0;
-            g_stream_state.feature_col_cursor = 0;
-            g_stream_state.light_rect_index = 0;
-            g_stream_state.light_cursor = 0;
-            g_stream_state.heavy_rect_index = 0;
-            g_stream_state.heavy_cursor = 0;
-        } break;
-
-        case STREAM_BASE:
-            if(stream_phase_step(&g_stream_state.base_rect_index, &g_stream_state.base_cursor, STREAM_BASE, STREAM_BASE_PADDING, STREAM_BUDGET_BASE_TICKS)){
-                g_stream_state.phase = STREAM_TERRAIN_FEATURES;
-            }
-            break;
-
-        case STREAM_TERRAIN_FEATURES:
-            if(stream_feature_phase_step()){
-                g_stream_state.phase = STREAM_DECOR_LIGHT;
-            }
-            break;
-
-        case STREAM_DECOR_LIGHT:
-            if(stream_phase_step(&g_stream_state.light_rect_index, &g_stream_state.light_cursor, STREAM_DECOR_LIGHT, STREAM_DECOR_PADDING, STREAM_BUDGET_LIGHT_TICKS)){
-                g_stream_state.phase = STREAM_EDITS;
-                g_stream_state.edit_cursor = 0;
-            }
-            break;
-
-        case STREAM_EDITS: {
-            u16 count = g_edit_count[g_dimension];
-            u16 t0 = REG_TM3CNT_L;
-            if(count > MAX_EDITS) count = MAX_EDITS;
-            while(g_stream_state.edit_cursor < count){
-                int i = g_stream_state.edit_cursor++;
-                int gx = edit_x(g_edit_log[g_dimension][i]);
-                int gz = edit_z(g_edit_log[g_dimension][i]);
-                int y = edit_y(g_edit_log[g_dimension][i]);
-                u8 val = edit_val(g_edit_log[g_dimension][i]);
-                for(int r=0; r<g_stream_state.rect_count; r++){
-                    StreamRect rect = stream_rect_padded(&g_stream_state.rects[r], STREAM_DECOR_PADDING);
-                    if(stream_rect_contains_global(&rect, gx, gz)){
-                        int lx = local_x_from_global(gx);
-                        int lz = local_z_from_global(gz);
-                        if(lx >= 0 && lx < CW && lz >= 0 && lz < CD && y >= 0 && y < CH){
-                            world[widx(lx,y,lz)] = val;
-                        }
-                        break;
-                    }
-                }
-                if((u16)(REG_TM3CNT_L - t0) >= STREAM_BUDGET_EDIT_TICKS) break;
-            }
-            if(g_stream_state.edit_cursor >= count){
-                g_stream_state.phase = STREAM_DECOR_HEAVY;
-            }
-        } break;
-
-        case STREAM_DECOR_HEAVY:
-            if(stream_phase_step(&g_stream_state.heavy_rect_index, &g_stream_state.heavy_cursor, STREAM_DECOR_HEAVY, STREAM_DECOR_PADDING, STREAM_BUDGET_HEAVY_TICKS)){
-                g_stream_state.phase = STREAM_IDLE;
-                g_stream_state.active = false;
-            }
-            break;
-
-        case STREAM_IDLE:
-            g_stream_state.active = false;
-            break;
+        }
     }
 }
 
-static void stream_maybe_recenter(void){
-    int local_x = F2I(pl.pos.x);
-    int local_z = F2I(pl.pos.z);
-    int new_off_x = g_world_offset_x;
-    int new_off_z = g_world_offset_z;
-    int right_trigger = CW - 1 - STREAM_TRIGGER_MARGIN;
-    int right_settle = CW - 1 - STREAM_SETTLE_POS;
-    int right_prefetch = CW - 1 - STREAM_PREFETCH_MARGIN;
-    int bottom_trigger = CD - 1 - STREAM_TRIGGER_MARGIN;
-    int bottom_settle = CD - 1 - STREAM_SETTLE_POS;
-    int bottom_prefetch = CD - 1 - STREAM_PREFETCH_MARGIN;
+static void apply_mineshaft_segment_to_column(int gx, int gz, u8* col, int plane_stride, const MineshaftSegment* seg){
+    int coord = seg->along_x ? gx : gz;
+    int cross = seg->along_x ? gz : gx;
+    int cross_delta = cross - seg->line;
+    int lo = (seg->start < seg->end) ? seg->start : seg->end;
+    int hi = (seg->start > seg->end) ? seg->start : seg->end;
+    int span = hi - lo;
+    int along;
+    int floor_y;
+    bool support;
 
-    if(local_x < STREAM_TRIGGER_MARGIN && g_world_offset_x > 0) new_off_x -= (STREAM_SETTLE_POS - local_x);
-    else if(local_x < STREAM_PREFETCH_MARGIN && pl.vel.x < 0 && g_world_offset_x > 0) new_off_x -= (STREAM_PREFETCH_MARGIN - local_x);
-    else if(local_x > right_trigger && g_world_offset_x < (VW - CW)) new_off_x += (local_x - right_settle);
-    else if(local_x > right_prefetch && pl.vel.x > 0 && g_world_offset_x < (VW - CW)) new_off_x += (local_x - right_prefetch);
+    if(coord < lo || coord > hi || cross_delta < -2 || cross_delta > 2) return;
 
-    if(local_z < STREAM_TRIGGER_MARGIN && g_world_offset_z > 0) new_off_z -= (STREAM_SETTLE_POS - local_z);
-    else if(local_z < STREAM_PREFETCH_MARGIN && pl.vel.z < 0 && g_world_offset_z > 0) new_off_z -= (STREAM_PREFETCH_MARGIN - local_z);
-    else if(local_z > bottom_trigger && g_world_offset_z < (VD - CD)) new_off_z += (local_z - bottom_settle);
-    else if(local_z > bottom_prefetch && pl.vel.z > 0 && g_world_offset_z < (VD - CD)) new_off_z += (local_z - bottom_prefetch);
+    along = coord - lo;
+    floor_y = lerp_int_round(seg->start_y, seg->end_y, abs(coord - seg->start), span ? span : 1);
+    support = (((along + seg->support_phase) % 5) == 0);
 
-    if(new_off_x < g_world_offset_x - STREAM_MAX_SHIFT) new_off_x = g_world_offset_x - STREAM_MAX_SHIFT;
-    if(new_off_x > g_world_offset_x + STREAM_MAX_SHIFT) new_off_x = g_world_offset_x + STREAM_MAX_SHIFT;
-    if(new_off_z < g_world_offset_z - STREAM_MAX_SHIFT) new_off_z = g_world_offset_z - STREAM_MAX_SHIFT;
-    if(new_off_z > g_world_offset_z + STREAM_MAX_SHIFT) new_off_z = g_world_offset_z + STREAM_MAX_SHIFT;
-    if(new_off_x != g_world_offset_x || new_off_z != g_world_offset_z){
-        stream_queue_or_start(new_off_x, new_off_z);
+    if(cross_delta >= -1 && cross_delta <= 1){
+        u8 floor_block = BLK_PLANK + 1;
+        carve_column_range(col, plane_stride, floor_y + 1, floor_y + 3);
+        if(seg->tracks && cross_delta == 0 && !support && ((along & 3) == 0)){
+            floor_block = (((along + seg->support_phase) & 4) == 0) ? (BLK_GRAVEL + 1) : (BLK_MOSSY_COBBLE + 1);
+        }
+        set_column_block(col, plane_stride, floor_y, floor_block);
+        if(support) set_column_block(col, plane_stride, floor_y + 3, BLK_WOOD + 1);
+    } else if(support) {
+        set_column_block(col, plane_stride, floor_y, BLK_PLANK + 1);
+        set_column_block(col, plane_stride, floor_y + 1, BLK_WOOD + 1);
+        set_column_block(col, plane_stride, floor_y + 2, BLK_WOOD + 1);
+        set_column_block(col, plane_stride, floor_y + 3, BLK_WOOD + 1);
+    }
+
+    if(seg->web_room && (coord == seg->end || coord == seg->end + ((seg->end >= seg->start) ? 2 : -2))){
+        int room_x = seg->along_x ? (seg->end + ((seg->end >= seg->start) ? 3 : -3)) : seg->line;
+        int room_z = seg->along_x ? seg->line : (seg->end + ((seg->end >= seg->start) ? 3 : -3));
+        apply_mineshaft_room_to_column(gx, gz, col, plane_stride, room_x, room_z, seg->end_y, true, 0x57454221u);
     }
 }
 
+static void apply_single_mineshaft_to_column(int gx, int gz, u8* col, int plane_stride, const MineshaftDesc* shaft){
+    if(!shaft->active) return;
+    apply_mineshaft_room_to_column(gx, gz, col, plane_stride, shaft->hub_x, shaft->hub_z, shaft->hub_y, false, 0);
+    for(int i = 0; i < shaft->segment_count; i++) apply_mineshaft_segment_to_column(gx, gz, col, plane_stride, &shaft->segments[i]);
+}
+
+static void apply_mineshafts_to_column(int gx, int gz, u8* col, int plane_stride){
+    MineshaftDesc shaft;
+    int guaranteed_count = (g_world_type == WORLD_HIGHLANDS) ? 2 : 1;
+    int region_x = gx / 80;
+    int region_z = gz / 80;
+    for(int i = 0; i < guaranteed_count; i++){
+        if(build_guaranteed_mineshaft_desc(&shaft, i)){
+            apply_single_mineshaft_to_column(gx, gz, col, plane_stride, &shaft);
+        }
+    }
+    for(int rz = region_z - 1; rz <= region_z + 1; rz++){
+        if(rz < 0 || rz > ((VD - 1) / 80)) continue;
+        for(int rx = region_x - 1; rx <= region_x + 1; rx++){
+            if(rx < 0 || rx > ((VW - 1) / 80)) continue;
+            if(build_mineshaft_desc(rx, rz, &shaft)){
+                apply_single_mineshaft_to_column(gx, gz, col, plane_stride, &shaft);
+            }
+        }
+    }
+}
+
+static void apply_tunnel_region_to_column(int gx, int gz, const ColumnGenDesc* desc, u8* col, int plane_stride, int region_x, int region_z){
+    u32 state = hash_region(0xA511E9B3u, region_x, region_z, 0);
+    int tunnel_roll = rng_next_range(&state, 0, 99);
+    int tunnel_count = (tunnel_roll < 20) ? 0 : ((tunnel_roll < 70) ? 1 : ((tunnel_roll < 95) ? 2 : 3));
+
+    for(int i = 0; i < tunnel_count; i++){
+        bool allow_surface = rng_next_range(&state, 0, 99) < 32;
+        int start_x = clamp_int(region_x * 16 + rng_next_range(&state, 1, 14), 1, VW - 2);
+        int start_z = clamp_int(region_z * 16 + rng_next_range(&state, 1, 14), 1, VD - 2);
+        int start_y = allow_surface ? rng_next_range(&state, 14, 25) : rng_next_range(&state, 4, 16);
+        int steps = rng_next_range(&state, 10, 18);
+        int yaw = rng_next_range(&state, 0, LUT_N - 1);
+        int pitch = allow_surface ? rng_next_range(&state, 4, 12) : rng_next_range(&state, -6, 6);
+        int hr_base = 2 + rng_next_range(&state, 0, 1);
+        fix step_len = allow_surface ? F(1.75f) : F(1.55f);
+        fix posx = I2F(start_x) + F(0.5f);
+        fix posy = I2F(start_y) + F(0.5f);
+        fix posz = I2F(start_z) + F(0.5f);
+
+        for(int step = 0; step < steps; step++){
+            int widen = 0;
+            if((step % 6) == 2 && rng_next_range(&state, 0, 99) < 55) widen = 1;
+            if(allow_surface && step < 4) widen++;
+            carve_ellipsoid_in_column(
+                gx, gz, desc, col, plane_stride,
+                (int)(posx >> 13), (int)(posy >> 13), (int)(posz >> 13),
+                hr_base + widen, 2 + (widen > 0), allow_surface
+            );
+
+            fix pitch_cos = fcos(pitch);
+            fix horiz_step = fmuli(pitch_cos, step_len);
+            posx += fmuli(fcos(yaw), horiz_step);
+            posz += fmuli(fsin(yaw), horiz_step);
+            posy += fmuli(fsin(pitch), step_len);
+
+            yaw = (yaw + rng_next_range(&state, -10, 10)) & (LUT_N - 1);
+            pitch += rng_next_range(&state, -3, 3);
+            if(allow_surface){
+                if(step < (steps >> 1)) pitch += 1;
+                if(posy > I2F(24)) pitch -= 4;
+            } else {
+                if(posy < I2F(5)) pitch += 3;
+                if(posy > I2F(16)) pitch -= 3;
+            }
+            pitch = clamp_int(pitch, -26, 26);
+        }
+    }
+}
+
+static void apply_chamber_region_to_column(int gx, int gz, const ColumnGenDesc* desc, u8* col, int plane_stride, int region_x, int region_z){
+    u32 state = hash_region(0xB16B00B5u, region_x, region_z, 0);
+    if(rng_next_range(&state, 0, 99) >= 18) return;
+
+    int center_x = clamp_int(region_x * 32 + rng_next_range(&state, 6, 25), 2, VW - 3);
+    int center_z = clamp_int(region_z * 32 + rng_next_range(&state, 6, 25), 2, VD - 3);
+    int center_y = rng_next_range(&state, 5, 17);
+    int hr = rng_next_range(&state, 4, 6);
+    int vr = rng_next_range(&state, 3, 4);
+
+    carve_ellipsoid_in_column(
+        gx, gz, desc, col, plane_stride,
+        center_x * 8 + 4, center_y * 8 + 4, center_z * 8 + 4,
+        hr, vr, false
+    );
+
+    if(rng_next_range(&state, 0, 99) < 35){
+        int ox = rng_next_range(&state, -2, 2);
+        int oz = rng_next_range(&state, -2, 2);
+        carve_ellipsoid_in_column(
+            gx, gz, desc, col, plane_stride,
+            (center_x + ox) * 8 + 4, (center_y + rng_next_range(&state, -1, 1)) * 8 + 4, (center_z + oz) * 8 + 4,
+            hr - 1, vr, false
+        );
+    }
+}
+
+static void apply_ore_region_to_column(int gx, int gz, u8* col, int plane_stride, int region_x, int region_z, u8 ore_blk, int chance_pct, int max_y, int min_nodes, int max_nodes){
+    u32 state = hash_region(0xC0FFEE11u ^ (u32)ore_blk, region_x, region_z, ore_blk);
+    if(rng_next_range(&state, 0, 99) >= chance_pct) return;
+
+    int nodes = rng_next_range(&state, min_nodes, max_nodes);
+    int yaw = rng_next_range(&state, 0, LUT_N - 1);
+    int pitch = rng_next_range(&state, -5, 5);
+    fix posx = I2F(clamp_int(region_x * 16 + rng_next_range(&state, 2, 13), 1, VW - 2)) + F(0.5f);
+    fix posy = I2F(rng_next_range(&state, 3, max_y)) + F(0.5f);
+    fix posz = I2F(clamp_int(region_z * 16 + rng_next_range(&state, 2, 13), 1, VD - 2)) + F(0.5f);
+
+    for(int i = 0; i < nodes; i++){
+        int hr = 1 + (rng_next_range(&state, 0, 99) < 35);
+        int vr = 1 + (hr > 1);
+        place_ore_blob_in_column(
+            gx, gz, col, plane_stride,
+            (int)(posx >> 13), (int)(posy >> 13), (int)(posz >> 13),
+            hr, vr, ore_blk
+        );
+
+        fix horiz_step = fmuli(fcos(pitch), F(0.95f));
+        posx += fmuli(fcos(yaw), horiz_step);
+        posz += fmuli(fsin(yaw), horiz_step);
+        posy += fmuli(fsin(pitch), F(0.65f));
+        yaw = (yaw + rng_next_range(&state, -14, 14)) & (LUT_N - 1);
+        pitch += rng_next_range(&state, -3, 3);
+        if(posy < I2F(3)) pitch += 3;
+        if(posy > I2F(max_y)) pitch -= 3;
+        pitch = clamp_int(pitch, -18, 18);
+    }
+}
+
+static void carve_overworld_column(int gx, int gz, const ColumnGenDesc* desc, u8* col, int plane_stride){
+    int tunnel_rx = gx >> 4;
+    int tunnel_rz = gz >> 4;
+    int tunnel_max_x = (VW - 1) >> 4;
+    int tunnel_max_z = (VD - 1) >> 4;
+    for(int rz = tunnel_rz - 1; rz <= tunnel_rz + 1; rz++){
+        if(rz < 0 || rz > tunnel_max_z) continue;
+        for(int rx = tunnel_rx - 1; rx <= tunnel_rx + 1; rx++){
+            if(rx < 0 || rx > tunnel_max_x) continue;
+            apply_tunnel_region_to_column(gx, gz, desc, col, plane_stride, rx, rz);
+        }
+    }
+
+    int chamber_rx = gx >> 5;
+    int chamber_rz = gz >> 5;
+    int chamber_max_x = (VW - 1) >> 5;
+    int chamber_max_z = (VD - 1) >> 5;
+    for(int rz = chamber_rz - 1; rz <= chamber_rz + 1; rz++){
+        if(rz < 0 || rz > chamber_max_z) continue;
+        for(int rx = chamber_rx - 1; rx <= chamber_rx + 1; rx++){
+            if(rx < 0 || rx > chamber_max_x) continue;
+            apply_chamber_region_to_column(gx, gz, desc, col, plane_stride, rx, rz);
+        }
+    }
+}
+
+static void place_overworld_ores_in_column(int gx, int gz, const ColumnGenDesc* desc, u8* col, int plane_stride){
+    (void)desc;
+    int ore_rx = gx >> 4;
+    int ore_rz = gz >> 4;
+    int ore_max_x = (VW - 1) >> 4;
+    int ore_max_z = (VD - 1) >> 4;
+    for(int rz = ore_rz - 1; rz <= ore_rz + 1; rz++){
+        if(rz < 0 || rz > ore_max_z) continue;
+        for(int rx = ore_rx - 1; rx <= ore_rx + 1; rx++){
+            if(rx < 0 || rx > ore_max_x) continue;
+            apply_ore_region_to_column(gx, gz, col, plane_stride, rx, rz, BLK_ORE_IRON, 46, 20, 5, 8);
+            apply_ore_region_to_column(gx, gz, col, plane_stride, rx, rz, BLK_ORE_GOLD, 18, 14, 3, 5);
+            apply_ore_region_to_column(gx, gz, col, plane_stride, rx, rz, BLK_ORE_DIAMOND, 10, 9, 2, 4);
+        }
+    }
+    place_cave_exposed_iron_in_column(gx, gz, col, plane_stride);
+}
+
+static inline bool local_world_in_bounds(int x, int y, int z){
+    return x >= 0 && x < CW && y >= 0 && y < CH && z >= 0 && z < CD;
+}
+
+static inline void local_world_set(int x, int y, int z, int blk){
+    if(!local_world_in_bounds(x, y, z)) return;
+    world[widx(x, y, z)] = (blk < 0) ? 0 : (u8)(blk + 1);
+}
+
+static inline u8 local_world_get_raw(int x, int y, int z){
+    if(!local_world_in_bounds(x, y, z)) return 0;
+    return world[widx(x, y, z)];
+}
+
+static void local_world_fill_box(int x0, int x1, int y0, int y1, int z0, int z1, int blk){
+    if(x0 > x1){ int t = x0; x0 = x1; x1 = t; }
+    if(y0 > y1){ int t = y0; y0 = y1; y1 = t; }
+    if(z0 > z1){ int t = z0; z0 = z1; z1 = t; }
+    if(x1 < 0 || x0 >= CW || y1 < 0 || y0 >= CH || z1 < 0 || z0 >= CD) return;
+    x0 = clamp_int(x0, 0, CW - 1);
+    x1 = clamp_int(x1, 0, CW - 1);
+    y0 = clamp_int(y0, 0, CH - 1);
+    y1 = clamp_int(y1, 0, CH - 1);
+    z0 = clamp_int(z0, 0, CD - 1);
+    z1 = clamp_int(z1, 0, CD - 1);
+    for(int y = y0; y <= y1; y++){
+        for(int z = z0; z <= z1; z++){
+            for(int x = x0; x <= x1; x++) local_world_set(x, y, z, blk);
+        }
+    }
+}
+
+static void local_world_clear_box(int x0, int x1, int y0, int y1, int z0, int z1){
+    local_world_fill_box(x0, x1, y0, y1, z0, z1, -1);
+}
+
+static void fortress_drop_support(int x, int start_y, int z){
+    if(x <= 0 || x >= CW - 1 || z <= 0 || z >= CD - 1) return;
+    for(int y = start_y; y > 1; y--){
+        u8 raw = local_world_get_raw(x, y, z);
+        local_world_set(x, y, z, BLK_NETHER_BRICK);
+        if(y != start_y && raw != 0 && raw != BLK_LAVA + 1) break;
+    }
+}
+
+static void fortress_corridor(bool along_x, int fixed, int start, int end, int y, bool enclosed, int support_phase){
+    int a0 = start, a1 = end;
+    if(a0 > a1){ int t = a0; a0 = a1; a1 = t; }
+    if(along_x){
+        local_world_clear_box(a0, a1, y, y + 4, fixed - 2, fixed + 2);
+        local_world_fill_box(a0, a1, y, y, fixed - 2, fixed + 2, BLK_NETHER_BRICK);
+        if(enclosed){
+            local_world_fill_box(a0, a1, y + 1, y + 3, fixed - 2, fixed - 2, BLK_NETHER_BRICK);
+            local_world_fill_box(a0, a1, y + 1, y + 3, fixed + 2, fixed + 2, BLK_NETHER_BRICK);
+            local_world_fill_box(a0, a1, y + 4, y + 4, fixed - 2, fixed + 2, BLK_NETHER_BRICK);
+            for(int x = a0 + 2 + (support_phase & 1); x <= a1 - 2; x += 4){
+                local_world_clear_box(x, x, y + 2, y + 2, fixed - 2, fixed - 2);
+                local_world_clear_box(x, x, y + 2, y + 2, fixed + 2, fixed + 2);
+            }
+        } else {
+            local_world_fill_box(a0, a1, y + 1, y + 1, fixed - 2, fixed - 2, BLK_NETHER_BRICK);
+            local_world_fill_box(a0, a1, y + 1, y + 1, fixed + 2, fixed + 2, BLK_NETHER_BRICK);
+        }
+    } else {
+        local_world_clear_box(fixed - 2, fixed + 2, y, y + 4, a0, a1);
+        local_world_fill_box(fixed - 2, fixed + 2, y, y, a0, a1, BLK_NETHER_BRICK);
+        if(enclosed){
+            local_world_fill_box(fixed - 2, fixed - 2, y + 1, y + 3, a0, a1, BLK_NETHER_BRICK);
+            local_world_fill_box(fixed + 2, fixed + 2, y + 1, y + 3, a0, a1, BLK_NETHER_BRICK);
+            local_world_fill_box(fixed - 2, fixed + 2, y + 4, y + 4, a0, a1, BLK_NETHER_BRICK);
+            for(int z = a0 + 2 + (support_phase & 1); z <= a1 - 2; z += 4){
+                local_world_clear_box(fixed - 2, fixed - 2, y + 2, y + 2, z, z);
+                local_world_clear_box(fixed + 2, fixed + 2, y + 2, y + 2, z, z);
+            }
+        } else {
+            local_world_fill_box(fixed - 2, fixed - 2, y + 1, y + 1, a0, a1, BLK_NETHER_BRICK);
+            local_world_fill_box(fixed + 2, fixed + 2, y + 1, y + 1, a0, a1, BLK_NETHER_BRICK);
+        }
+    }
+
+    if(along_x){
+        fortress_drop_support(a0, y - 1, fixed - 2);
+        fortress_drop_support(a0, y - 1, fixed + 2);
+        fortress_drop_support(a1, y - 1, fixed - 2);
+        fortress_drop_support(a1, y - 1, fixed + 2);
+    } else {
+        fortress_drop_support(fixed - 2, y - 1, a0);
+        fortress_drop_support(fixed + 2, y - 1, a0);
+        fortress_drop_support(fixed - 2, y - 1, a1);
+        fortress_drop_support(fixed + 2, y - 1, a1);
+    }
+
+    int step = enclosed ? 7 : 6;
+    int first = a0 + 2 + (support_phase % 3);
+    for(int a = first; a < a1; a += step){
+        if(along_x){
+            fortress_drop_support(a, y - 1, fixed - 2);
+            fortress_drop_support(a, y - 1, fixed + 2);
+        } else {
+            fortress_drop_support(fixed - 2, y - 1, a);
+            fortress_drop_support(fixed + 2, y - 1, a);
+        }
+    }
+}
+
+static void fortress_crossroad(int cx, int cz, int y){
+    local_world_clear_box(cx - 4, cx + 4, y, y + 4, cz - 4, cz + 4);
+    local_world_fill_box(cx - 4, cx + 4, y, y, cz - 4, cz + 4, BLK_NETHER_BRICK);
+    local_world_fill_box(cx - 1, cx + 1, y + 1, y + 1, cz - 1, cz + 1, BLK_NETHER_BRICK);
+
+    for(int x = cx - 4; x <= cx + 4; x++){
+        if(x < cx - 1 || x > cx + 1){
+            local_world_set(x, y + 1, cz - 4, BLK_NETHER_BRICK);
+            local_world_set(x, y + 1, cz + 4, BLK_NETHER_BRICK);
+        }
+    }
+    for(int z = cz - 4; z <= cz + 4; z++){
+        if(z < cz - 1 || z > cz + 1){
+            local_world_set(cx - 4, y + 1, z, BLK_NETHER_BRICK);
+            local_world_set(cx + 4, y + 1, z, BLK_NETHER_BRICK);
+        }
+    }
+
+    fortress_drop_support(cx - 4, y - 1, cz - 4);
+    fortress_drop_support(cx + 4, y - 1, cz - 4);
+    fortress_drop_support(cx - 4, y - 1, cz + 4);
+    fortress_drop_support(cx + 4, y - 1, cz + 4);
+}
+
+static void fortress_open_room(int cx, int cz, int y, int radius){
+    local_world_clear_box(cx - radius, cx + radius, y, y + 5, cz - radius, cz + radius);
+    local_world_fill_box(cx - radius, cx + radius, y, y, cz - radius, cz + radius, BLK_NETHER_BRICK);
+    for(int x = cx - radius; x <= cx + radius; x++){
+        if(x != cx - 1 && x != cx && x != cx + 1){
+            local_world_set(x, y + 1, cz - radius, BLK_NETHER_BRICK);
+            local_world_set(x, y + 1, cz + radius, BLK_NETHER_BRICK);
+        }
+    }
+    for(int z = cz - radius; z <= cz + radius; z++){
+        if(z != cz - 1 && z != cz && z != cz + 1){
+            local_world_set(cx - radius, y + 1, z, BLK_NETHER_BRICK);
+            local_world_set(cx + radius, y + 1, z, BLK_NETHER_BRICK);
+        }
+    }
+    fortress_drop_support(cx - radius, y - 1, cz - radius);
+    fortress_drop_support(cx + radius, y - 1, cz - radius);
+    fortress_drop_support(cx - radius, y - 1, cz + radius);
+    fortress_drop_support(cx + radius, y - 1, cz + radius);
+}
+
+static void fortress_enclosed_room(int cx, int cz, int y, int half_x, int half_z){
+    local_world_clear_box(cx - half_x, cx + half_x, y, y + 4, cz - half_z, cz + half_z);
+    local_world_fill_box(cx - half_x, cx + half_x, y, y, cz - half_z, cz + half_z, BLK_NETHER_BRICK);
+    local_world_fill_box(cx - half_x, cx + half_x, y + 1, y + 3, cz - half_z, cz - half_z, BLK_NETHER_BRICK);
+    local_world_fill_box(cx - half_x, cx + half_x, y + 1, y + 3, cz + half_z, cz + half_z, BLK_NETHER_BRICK);
+    local_world_fill_box(cx - half_x, cx - half_x, y + 1, y + 3, cz - half_z, cz + half_z, BLK_NETHER_BRICK);
+    local_world_fill_box(cx + half_x, cx + half_x, y + 1, y + 3, cz - half_z, cz + half_z, BLK_NETHER_BRICK);
+    local_world_fill_box(cx - half_x, cx + half_x, y + 4, y + 4, cz - half_z, cz + half_z, BLK_NETHER_BRICK);
+
+    for(int x = cx - half_x + 2; x <= cx + half_x - 2; x += 4){
+        local_world_clear_box(x, x, y + 2, y + 2, cz - half_z, cz - half_z);
+        local_world_clear_box(x, x, y + 2, y + 2, cz + half_z, cz + half_z);
+    }
+
+    fortress_drop_support(cx - half_x, y - 1, cz - half_z);
+    fortress_drop_support(cx + half_x, y - 1, cz - half_z);
+    fortress_drop_support(cx - half_x, y - 1, cz + half_z);
+    fortress_drop_support(cx + half_x, y - 1, cz + half_z);
+}
+
+static void fortress_stair_run_x(int start_x, int zc, int start_y, int dir, int rises, int* out_end_x, int* out_end_y){
+    int cur_x = start_x;
+    int cur_y = start_y;
+    for(int i = 0; i < rises; i++){
+        fortress_corridor(true, zc, cur_x, cur_x + dir, cur_y, false, i);
+        cur_x += dir * 2;
+        cur_y++;
+    }
+    fortress_corridor(true, zc, cur_x, cur_x + dir * 2, cur_y, false, rises);
+    *out_end_x = cur_x + dir * 2;
+    *out_end_y = cur_y;
+}
+
+static void place_nether_fortress(int cx, int cz, int base_y, int gx, int gz){
+    u32 state = hash_region(0x4E465452u, gx, base_y, gz);
+    int west_len = rng_next_range(&state, 10, 16);
+    int east_len = rng_next_range(&state, 12, 18);
+    int north_len = rng_next_range(&state, 8, 14);
+    int south_len = rng_next_range(&state, 10, 15);
+    int support_phase = rng_next_range(&state, 0, 3);
+    int stair_rises = rng_next_range(&state, 2, 3);
+    bool stairs_west = (rng_next_range(&state, 0, 99) < 45);
+
+    fortress_crossroad(cx, cz, base_y);
+    fortress_corridor(true, cz, cx - west_len - 4, cx - 5, base_y, false, support_phase);
+    fortress_corridor(true, cz, cx + 5, cx + east_len + 4, base_y, false, support_phase + 1);
+    fortress_corridor(false, cx, cz - north_len - 4, cz - 5, base_y, false, support_phase + 2);
+    fortress_corridor(false, cx, cz + 5, cz + south_len + 4, base_y, false, support_phase + 3);
+
+    {
+        int blaze_cz = cz - north_len - 8;
+        fortress_open_room(cx, blaze_cz, base_y, 4);
+        local_world_fill_box(cx - 1, cx + 1, base_y + 1, base_y + 1, blaze_cz - 1, blaze_cz + 1, BLK_NETHER_BRICK);
+        local_world_fill_box(cx, cx, base_y + 2, base_y + 3, blaze_cz, blaze_cz, BLK_BASALT);
+        local_world_clear_box(cx - 1, cx + 1, base_y + 1, base_y + 3, blaze_cz + 4, blaze_cz + 4);
+    }
+
+    {
+        int farm_cz = cz + south_len + 8;
+        fortress_enclosed_room(cx, farm_cz, base_y, 4, 4);
+        local_world_fill_box(cx - 2, cx + 2, base_y, base_y, farm_cz - 2, farm_cz + 2, BLK_NETHERRACK);
+        local_world_fill_box(cx - 1, cx + 1, base_y, base_y, farm_cz - 3, farm_cz + 3, BLK_BASALT);
+        local_world_clear_box(cx - 1, cx + 1, base_y + 1, base_y + 3, farm_cz - 4, farm_cz - 4);
+    }
+
+    {
+        int dir = stairs_west ? -1 : 1;
+        int branch_end = stairs_west ? (cx - west_len - 4) : (cx + east_len + 4);
+        int stair_end_x, stair_end_y;
+        int hall_from, hall_to;
+        int hall_center_x;
+
+        fortress_stair_run_x(branch_end + dir, cz, base_y, dir, stair_rises, &stair_end_x, &stair_end_y);
+        hall_from = stair_end_x + dir;
+        hall_to = hall_from + dir * 7;
+        fortress_corridor(true, cz, hall_from, hall_to, stair_end_y, true, support_phase + 1);
+        hall_center_x = hall_to + dir * 4;
+        fortress_enclosed_room(hall_center_x, cz, stair_end_y, 5, 3);
+        if(dir > 0) local_world_clear_box(hall_center_x - 5, hall_center_x - 5, stair_end_y + 1, stair_end_y + 3, cz - 1, cz + 1);
+        else         local_world_clear_box(hall_center_x + 5, hall_center_x + 5, stair_end_y + 1, stair_end_y + 3, cz - 1, cz + 1);
+    }
+}
