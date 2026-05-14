@@ -18,7 +18,6 @@ static bool g_spectator_saved_hud = true;
 static bool g_spectator_saved_hud_valid = false;
 static int g_jump_tap_timer = 0;
 
-// g_render_scale now controls Hardware Scaling.
 // 1 = 240x160, 2 = 120x80, 3 = 80x53, 4 = 60x40
 static EWRAM_DATA int g_render_scale = 2; 
 static EWRAM_DATA int g_face_limit = 1600; 
