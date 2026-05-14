@@ -352,7 +352,6 @@ static bool stream_process_lines(StreamRect rect, int* cursor, StreamPhase phase
     return *cursor >= end;
 }
 
-// Stream terrain features one column at a time so cave/ore work respects the frame budget.
 static bool stream_process_feature_columns(StreamRect rect, int* line_cursor, int* col_cursor, u16 budget_ticks){
     bool x_major = ((rect.x1 - rect.x0) < CW);
     int line_start = x_major ? rect.x0 : rect.z0;
