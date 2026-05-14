@@ -7,7 +7,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-/* Graphics provided externally */
 #include "../assets/image0.c"
 #include "../assets/image1.c"
 
@@ -165,11 +164,9 @@ typedef struct {
     int face; // 0=PX, 1=NX, 2=PY, 3=NY, 4=PZ, 5=NZ
 } RayHit;
 
-// Physical Screen Dimensions
 #define SCREEN_W 240
 #define SCREEN_H 160
 
-// Logical Render Dimensions (Updated by scale)
 static int g_rw = 240;
 static int g_rh = 160;
 static int g_last_hw_scale = -1;
@@ -272,20 +269,15 @@ void ARM_CODE perf_debug_trap(void){
 }
 #endif
 
-/* Hardware Scaling Helper */
 static void set_hardware_scale(int scale) {
-    // Mode 4 uses BG2 for the bitmap.
-    // PA/PD = 0x100 (256) means 1:1. 
-    // To zoom in (lower res), we use a smaller step.
-    // 2x Zoom (120px wide) -> we step 0.5 pixels (128) per screen pixel.
+ 
     int aff_step = 256 / scale; 
     
     REG_BG2PA = aff_step; 
     REG_BG2PB = 0;        
     REG_BG2PC = 0;        
     REG_BG2PD = aff_step; 
-    
-    // Reset offset to top-left
+
     REG_BG2X = 0;
     REG_BG2Y = 0;
     g_last_hw_scale = scale;
