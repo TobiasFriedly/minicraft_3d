@@ -525,7 +525,6 @@ static void show_graphics_settings(u8 curBlk) {
             snprintf(buf, 32, "DIST: %d", g_vis_dist);
             draw_text3x5_shadowed_centered_bb(buf, y, body_scale, sel==0 ? C_HILIGHT : C_DIM, 251); y += step_y;
 
-            // Updated label for Hardware Scaling
             snprintf(buf, 32, "SCALE: %dX", g_render_scale);
             draw_text3x5_shadowed_centered_bb(buf, y, body_scale, sel==1 ? C_HILIGHT : C_DIM, 251); y += step_y;
 
@@ -680,7 +679,6 @@ static void show_graphics_settings(u8 curBlk) {
 }
 
 static PauseResult show_pause_menu(u8* io_curBlk){
-    // Force scale 1 for clear menu text
     set_hardware_scale(1); 
     int saved_scale = g_render_scale;
     g_render_scale = 1; update_render_dims();
@@ -733,10 +731,10 @@ static PauseResult show_pause_menu(u8* io_curBlk){
         if(kd & KEY_A){
             if(sel == 0){ break; }
             else if (sel == 1) { 
-                // Restore logic scaling for the preview inside settings, but settings loop handles display
+
                 g_render_scale = saved_scale; update_render_dims();
                 show_graphics_settings(*io_curBlk); 
-                saved_scale = g_render_scale; // capture changes
+                saved_scale = g_render_scale; 
                 g_render_scale = 1; update_render_dims(); set_hardware_scale(1);
                 last = -1; 
             }
@@ -758,7 +756,6 @@ static PauseResult show_pause_menu(u8* io_curBlk){
             }
         }
     }
-    // Restore game scaling
     g_render_scale = saved_scale; update_render_dims();
     return PM_RESUME;
 }
