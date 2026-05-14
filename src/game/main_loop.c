@@ -87,7 +87,7 @@ static ARM_CODE void mainloop(MenuResult menu_res){
     u8 frameskip_pending = 0;
     backbuffer = vram_backbuffer();
     
-    // Ensure hardware state is set for game
+
     update_render_dims();
     
     while(1){
@@ -143,7 +143,7 @@ static ARM_CODE void mainloop(MenuResult menu_res){
         if(g_action_state[ACT_PAUSE].pressed){
             frameskip_pending = 0;
             PauseResult pr = show_pause_menu(&curBlk);
-            // Ensure hardware state is restored after pause
+        
             update_render_dims();
             input_consume_current_buttons();
             
