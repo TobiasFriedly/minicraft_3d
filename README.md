@@ -1,6 +1,7 @@
 # Minicraft GBA v0.5.1
 
-by GameOfTobi
+by Tobias Friedly / GameOfTobi 
+https://www.youtube.com/c/gameoftobi
 
 ## Build
 
