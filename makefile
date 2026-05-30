@@ -1,6 +1,6 @@
 BASE_TARGET := minicraft_3D_by_GameOfTobi
 TARGET ?= $(BASE_TARGET)
-SRCS := src/main.c src/render/mode4_fast_asm.S
+SRCS := src/main.c src/render/mode4_fast_asm.s
 ifndef DEVKITPRO
 $(error DEVKITPRO is not set. Define it, e.g. /opt/devkitpro)
 endif
