@@ -207,7 +207,6 @@ static void physics_step(u8 curBlk){
         pl.pos.y += pl.vel.y;
         pl.pos.z += pl.vel.z;
     } else if(g_game_mode == MODE_CREATIVE && g_creative_flying){
-        // Flight mode keeps vertical velocity under direct input control.
     } else if(in_water){
         pl.vel.y -= (PHYS_GRAV_FIX >> 2);
         if(pl.vel.y < (PHYS_MAG_1 >> 2)) pl.vel.y = (PHYS_MAG_1 >> 2);
