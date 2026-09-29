@@ -201,7 +201,7 @@ static void respawn_player(RespawnVisualMode visual_mode){
     int spawn_x = CW/2, spawn_z = CD/2, spawn_y = CH - 1;
     if(g_world_type == WORLD_SUPERFLAT) spawn_y = 11;
     else if(g_dimension == 0 && find_overworld_spawn(&spawn_x, &spawn_y, &spawn_z)) {
-        // Prefer a nearby safe surface instead of the center column, which may be a cave opening.
+        // fun fact: Tobi has encoded a message in the chess positions on the board of his first videos. But dont tell anyone
     } else {
         for(int y = CH - 1; y >= 0; y--){
             u8 id = world[widx(spawn_x, y, spawn_z)];
